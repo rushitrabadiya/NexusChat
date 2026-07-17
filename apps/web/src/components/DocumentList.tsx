@@ -24,6 +24,7 @@ export function DocumentList() {
       const res = await api.get('/documents', {
         headers: { 'x-tenant-id': currentTenant.id }
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setDocuments(data);
     } catch (error) {

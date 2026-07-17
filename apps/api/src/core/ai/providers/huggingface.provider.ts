@@ -3,7 +3,7 @@ import { KeyRotator } from '../utils/key-rotator.util';
 
 export class HuggingFaceProvider implements AiProvider {
   name = 'huggingface';
-  private rotator = new KeyRotator('HUGGINGFACE_API_KEY', 'HuggingFace');
+  private rotator = new KeyRotator('HuggingFace');
   private baseUrl = 'https://api-inference.huggingface.co/pipeline/feature-extraction';
   private model = 'jinaai/jina-embeddings-v2-base-en'; // Guaranteed 768 dimensions!
 
@@ -20,50 +20,64 @@ export class HuggingFaceProvider implements AiProvider {
   }
 
   async generateEmbedding(text: string): Promise<number[]> {
-    return await this.rotator.executeWithRotation(async (key) => {
-      const response = await fetch(`${this.baseUrl}/${this.model}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`
-        },
-        body: JSON.stringify({ inputs: text })
-      });
+    try {
+      return await this.rotator.executeWithRotation(100, async (key) => {
+        const response = await fetch(`${this.baseUrl}/${this.model}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${key}`
+          },
+          body: JSON.stringify({ inputs: text })
+        });
 
-      if (!response.ok) {
-        // HF Inference API sometimes returns 503 while models are loading into memory
-        if (response.status === 503) {
-          throw new Error('429'); // Hack: force rotation/retry if model is cold loading
+        if (!response.ok) {
+          // HF Inference API sometimes returns 503 while models are loading into memory
+          if (response.status === 503) {
+            throw new Error('429'); // Hack: force rotation/retry if model is cold loading
+          }
+          throw new Error(`HuggingFace API Error: ${response.status}`);
         }
-        throw new Error(`HuggingFace API Error: ${response.status}`);
-      }
 
-      const data = await response.json();
-      // Feature extraction sometimes wraps in outer arrays
-      return Array.isArray(data[0]) ? data[0] : data;
-    });
+        const data = await response.json();
+        // Feature extraction sometimes wraps in outer arrays
+        return Array.isArray(data[0]) ? data[0] : data;
+      });
+    } catch (error) {
+      console.error('[HuggingFaceProvider] generateEmbedding error:', error);
+      throw error;
+    }
   }
 
   async generateEmbeddingsBatch(texts: string[]): Promise<number[][]> {
-    return await this.rotator.executeWithRotation(async (key) => {
-      const response = await fetch(`${this.baseUrl}/${this.model}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`
-        },
-        body: JSON.stringify({ inputs: texts })
-      });
+    try {
+      return await this.rotator.executeWithRotation(texts.length * 100, async (key) => {
+        const response = await fetch(`${this.baseUrl}/${this.model}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${key}`
+          },
+          body: JSON.stringify({ inputs: texts })
+        });
 
-      if (!response.ok) {
-        if (response.status === 503) {
-          throw new Error('429');
+        if (!response.ok) {
+          if (response.status === 503) {
+            throw new Error('429');
+          }
+          throw new Error(`HuggingFace API Error: ${response.status}`);
         }
-        throw new Error(`HuggingFace API Error: ${response.status}`);
-      }
 
-      const data = await response.json();
-      return data;
-    });
+        const data = await response.json();
+        return data;
+      });
+    } catch (error) {
+      console.error('[HuggingFaceProvider] generateEmbeddingsBatch error:', error);
+      throw error;
+    }
+  }
+
+  async getQuotaStatuses() {
+    return await this.rotator.getQuotaStatuses();
   }
 }

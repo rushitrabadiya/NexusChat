@@ -78,6 +78,23 @@ Built with resilience in mind, NexusChat features a robust **Multi-Provider AI O
    ```
    _The API will start on port 3000 and the Web Interface on port 5173._
 
+### 🐳 Running Local AI Models (Ollama)
+
+To utilize the local fallback mechanism and ensure maximum privacy, you can run Ollama via Docker. This allows NexusChat to route requests locally when cloud providers are rate-limited.
+
+1. **Start the Ollama Docker Container:**
+
+   ```bash
+   docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+   ```
+
+2. **Pull and Run a Model (e.g., LLaMA 3 or Mistral):**
+   ```bash
+   docker exec -it ollama ollama run llama3
+   # or
+   docker exec -it ollama ollama run mistral
+   ```
+
 ## 🏗️ Project Structure
 
 This project uses a monorepo setup powered by Turborepo:

@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { SystemCacheModal } from './SystemCacheModal';
 import { SystemQueueModal } from './SystemQueueModal';
+import { ApiQuotasModal } from './ApiQuotasModal';
+import { ApiKeysModal } from './ApiKeysModal';
 import { useAppStore } from '../store/app.store';
-import { Plus, ChevronRight, Hash, Trash2, DatabaseZap, Clock, RefreshCw } from 'lucide-react';
+import { Plus, ChevronRight, Hash, Trash2, DatabaseZap, Clock, RefreshCw, Activity, KeySquare } from 'lucide-react';
 import { api } from '../lib/api';
 
 interface SystemStatus {
@@ -15,6 +17,8 @@ export function Sidebar() {
   const [isCreating, setIsCreating] = useState(false);
   const [isCacheModalOpen, setIsCacheModalOpen] = useState(false);
   const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
+  const [isQuotasModalOpen, setIsQuotasModalOpen] = useState(false);
+  const [isApiKeysModalOpen, setIsApiKeysModalOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
   const fetchStatus = useCallback(async () => {
@@ -34,7 +38,10 @@ export function Sidebar() {
 
   useEffect(() => {
     api.get('/tenants')
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then(data => {
         setTenants(data);
         if (data.length > 0 && !currentTenant) {
@@ -108,10 +115,10 @@ export function Sidebar() {
       <div className="flex-1 overflow-y-auto p-3">
         <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest px-2 mb-3">Your Tenants</div>
         {tenants.map(tenant => (
-          <button
+          <div
             key={tenant.id}
             onClick={() => setCurrentTenant(tenant)}
-            className={`w-full text-left px-3 py-2.5 mb-1 rounded-xl flex items-center justify-between group transition-all duration-300 border ${currentTenant?.id === tenant.id
+            className={`w-full text-left px-3 py-2.5 mb-1 rounded-xl flex items-center justify-between group transition-all duration-300 border cursor-pointer ${currentTenant?.id === tenant.id
               ? 'bg-white border-zinc-200 text-zinc-900 shadow-sm'
               : 'border-transparent text-zinc-600 hover:bg-white/60 hover:text-zinc-900'
               }`}
@@ -134,7 +141,7 @@ export function Sidebar() {
                 <ChevronRight className="w-4 h-4 text-indigo-500" />
               )}
             </div>
-          </button>
+          </div>
         ))}
       </div>
 
@@ -171,6 +178,27 @@ export function Sidebar() {
             </div>
             <span className="text-xs font-bold text-zinc-800">{systemStatus?.pendingQueueCount ?? '-'}</span>
           </button>
+
+          <button
+            onClick={() => setIsQuotasModalOpen(true)}
+            className="flex justify-between items-center bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 hover:border-emerald-200 px-3 py-2 rounded-lg transition-colors group"
+          >
+            <div className="flex items-center gap-2 text-xs font-medium text-zinc-600 group-hover:text-emerald-700">
+              <Activity className="w-3.5 h-3.5 text-emerald-500" />
+              API Quotas
+            </div>
+            <span className="text-xs font-bold text-zinc-800">Limits</span>
+          </button>
+          <button
+            onClick={() => setIsApiKeysModalOpen(true)}
+            className="flex justify-between items-center bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 hover:border-blue-200 px-3 py-2 rounded-lg transition-colors group"
+          >
+            <div className="flex items-center gap-2 text-xs font-medium text-zinc-600 group-hover:text-blue-700">
+              <KeySquare className="w-3.5 h-3.5 text-blue-500" />
+              API Keys
+            </div>
+            <span className="text-xs font-bold text-zinc-800">Manage</span>
+          </button>
         </div>
       </div>
 
@@ -183,6 +211,14 @@ export function Sidebar() {
         isOpen={isQueueModalOpen}
         onClose={() => setIsQueueModalOpen(false)}
         onUpdateCount={fetchStatus}
+      />
+      <ApiQuotasModal
+        isOpen={isQuotasModalOpen}
+        onClose={() => setIsQuotasModalOpen(false)}
+      />
+      <ApiKeysModal
+        isOpen={isApiKeysModalOpen}
+        onClose={() => setIsApiKeysModalOpen(false)}
       />
     </div>
   );

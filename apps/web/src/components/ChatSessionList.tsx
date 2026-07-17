@@ -24,6 +24,7 @@ export function ChatSessionList() {
         const res = await api.get('/chat', {
           headers: { 'x-tenant-id': currentTenant.id }
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setSessions(data);
       } catch (error) {
@@ -35,12 +36,7 @@ export function ChatSessionList() {
     fetchSessions();
   }, [currentTenant, chatSessionId]);
 
-  // Handle auto-selecting the first chat when switching tenants
-  useEffect(() => {
-    if (sessions.length > 0 && !chatSessionId) {
-      setChatSessionId(sessions[0].id);
-    }
-  }, [sessions]);
+
 
   // Reset chat when tenant changes
   useEffect(() => {

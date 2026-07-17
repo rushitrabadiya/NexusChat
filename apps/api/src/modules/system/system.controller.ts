@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { redis } from '../../core/cache/redis.service';
 import { documentQueue } from '../../core/queue/bullmq';
+import { AiFactory } from '../../core/ai/ai.factory';
+import { ApiKeyService } from './api-key.service';
 
 export const getSystemStatus = async (req: Request, res: Response): Promise<any> => {
   try {
@@ -29,8 +31,15 @@ export const getCachedQueries = async (req: Request, res: Response): Promise<any
   try {
     const keys = await redis.keys('chat:*');
 
+    if (keys.length === 0) return res.json([]);
+
+    // Fetch TTL for all keys in a single pipeline request
+    const pipeline = redis.pipeline();
+    keys.forEach(key => pipeline.ttl(key));
+    const ttls = await pipeline.exec();
+
     // Instead of raw MGET which can be large, just return metadata
-    const queries = keys.map(key => {
+    const queries = keys.map((key, index) => {
       const parts = key.split(':');
       const tenantId = parts[1];
       const encodedQuery = parts[2];
@@ -42,12 +51,19 @@ export const getCachedQueries = async (req: Request, res: Response): Promise<any
         }
       } catch (e) { }
 
+      // Get TTL from pipeline result. Pipeline exec returns [[err, result], [err, result], ...]
+      const ttl = ttls && ttls[index] ? (ttls[index][1] as number) : 0;
+
       return {
         key,
         tenantId,
-        queryText
+        queryText,
+        ttl
       };
     });
+
+    // Sort descending by TTL (highest remaining TTL = newest query)
+    queries.sort((a, b) => b.ttl - a.ttl);
 
     return res.json(queries);
   } catch (error) {
@@ -122,5 +138,58 @@ export const flushQueue = async (req: Request, res: Response): Promise<any> => {
   } catch (error) {
     console.error('Failed to flush queue:', error);
     return res.status(500).json({ error: 'Failed to flush queue' });
+  }
+};
+
+export const getApiQuotas = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const factory = AiFactory.getInstance();
+    const quotas = await factory.getAllQuotaStatuses();
+    return res.json(quotas);
+  } catch (error) {
+    console.error('Failed to get API quotas:', error);
+    return res.status(500).json({ error: 'Failed to retrieve API Quota status' });
+  }
+};
+
+// ==========================================
+// API Key Management Endpoints
+// ==========================================
+
+export const getApiKeys = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const keys = await ApiKeyService.getAllKeys();
+    return res.json(keys);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to get API keys' });
+  }
+};
+
+export const createApiKey = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const key = await ApiKeyService.addKey(req.body);
+    return res.status(201).json(key);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Failed to create API key' });
+  }
+};
+
+export const deleteApiKey = async (req: Request, res: Response): Promise<any> => {
+  try {
+    await ApiKeyService.deleteKey(req.params.id);
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to delete API key' });
+  }
+};
+
+export const toggleApiKey = async (req: Request, res: Response): Promise<any> => {
+  try {
+    const { isActive } = req.body;
+    const key = await ApiKeyService.toggleActive(req.params.id, isActive);
+    return res.json(key);
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to toggle API key' });
   }
 };

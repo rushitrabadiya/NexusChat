@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { UploadCloud, Loader2, CheckCircle2 } from 'lucide-react';
+import { UploadCloud, Loader2, CheckCircle2, Globe, ArrowRight } from 'lucide-react';
 import { useAppStore } from '../store/app.store';
 import { api } from '../lib/api';
 
@@ -7,6 +7,8 @@ export function UploadZone() {
   const currentTenant = useAppStore(state => state.currentTenant);
   const [isDragging, setIsDragging] = useState(false);
   const [status, setStatus] = useState<'idle' | 'uploading' | 'success'>('idle');
+  const [crawlUrl, setCrawlUrl] = useState('');
+  const [crawlStatus, setCrawlStatus] = useState<'idle' | 'crawling' | 'success'>('idle');
 
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -52,6 +54,24 @@ export function UploadZone() {
     }
   };
 
+  const handleCrawlSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTenant || !crawlUrl) return;
+
+    setCrawlStatus('crawling');
+    try {
+      await api.post('/documents/crawl', { url: crawlUrl }, {
+        headers: { 'x-tenant-id': currentTenant.id },
+      });
+      setCrawlStatus('success');
+      setCrawlUrl('');
+      setTimeout(() => setCrawlStatus('idle'), 3000);
+    } catch (error) {
+      console.error(error);
+      setCrawlStatus('idle');
+    }
+  };
+
   if (!currentTenant) return null;
 
   return (
@@ -72,7 +92,7 @@ export function UploadZone() {
           multiple
           onChange={handleFileSelect}
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-          accept=".pdf,.docx,.json"
+          accept=".pdf,.docx,.json,.md,.txt,.csv,.png,.jpg,.jpeg"
         />
 
         {status === 'idle' && (
@@ -85,7 +105,7 @@ export function UploadZone() {
                 {isDragging ? 'Drop files here' : 'Drag & drop files here'}
               </p>
               <p className="text-[10px] text-zinc-500 font-medium tracking-wide mt-1 uppercase">
-                Supports PDF, DOCX, JSON
+                PDF, DOCX, JSON, MD, TXT, CSV, PNG, JPG
               </p>
             </div>
           </div>
@@ -99,11 +119,40 @@ export function UploadZone() {
         )}
 
         {status === 'success' && (
-          <div className="flex flex-col items-center text-emerald-400">
+          <div className="flex flex-col items-center text-emerald-500">
             <CheckCircle2 className="w-8 h-8 mb-3" />
             <p className="text-sm font-medium">Files queued successfully!</p>
           </div>
         )}
+      </div>
+
+      <div className="mt-4">
+        <form onSubmit={handleCrawlSubmit} className="relative flex items-center">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <Globe className="h-4 w-4 text-zinc-400" />
+          </div>
+          <input
+            type="url"
+            value={crawlUrl}
+            onChange={(e) => setCrawlUrl(e.target.value)}
+            placeholder="https://example.com (Deep Crawl)"
+            className="block w-full pl-9 pr-12 py-2.5 sm:text-sm border-zinc-300 rounded-xl bg-white shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all border outline-none text-zinc-800"
+            required
+          />
+          <button
+            type="submit"
+            disabled={crawlStatus !== 'idle'}
+            className="absolute inset-y-1 right-1 px-3 flex items-center bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg transition-colors disabled:opacity-50"
+          >
+            {crawlStatus === 'crawling' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : crawlStatus === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <ArrowRight className="w-4 h-4" />
+            )}
+          </button>
+        </form>
       </div>
     </div>
   );

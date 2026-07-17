@@ -1,14 +1,14 @@
 import { Job } from 'bullmq';
 import { prisma } from '../../core/db/prisma';
 import { AiFactory } from '../../core/ai/ai.factory';
-import fs from 'fs';
-import pdfParse from 'pdf-parse';
-import mammoth from 'mammoth';
+import { CheerioCrawler, Dataset, EnqueueStrategy } from 'crawlee';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import Tesseract from 'tesseract.js';
+import { convert } from 'html-to-text';
+import fs from 'fs';
+import path from 'path';
 
-export const documentProcessor = async (job: Job) => {
-  const { documentId, filePath, fileType, tenantId } = job.data;
+export const crawlProcessor = async (job: Job) => {
+  const { documentId, url, tenantId } = job.data;
 
   try {
     const document = await prisma.document.findUnique({ where: { id: documentId } });
@@ -23,39 +23,51 @@ export const documentProcessor = async (job: Job) => {
       data: { status: 'PROCESSING', error: null }
     });
 
-    // Idempotency: Delete any existing chunks for this document in case of a retry
+    // Idempotency: Delete any existing chunks
     await prisma.documentChunk.deleteMany({
       where: { documentId }
     });
 
     let extractedText = '';
-    const fileBuffer = fs.readFileSync(filePath);
 
-    if (fileType === 'application/pdf' || document.filename.endsWith('.pdf')) {
-      const data = await pdfParse(fileBuffer);
-      extractedText = data.text;
-    } else if (fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || document.filename.endsWith('.docx')) {
-      const data = await mammoth.extractRawText({ buffer: fileBuffer });
-      extractedText = data.value;
-    } else if (fileType === 'application/json' || document.filename.endsWith('.json')) {
-      const data = JSON.parse(fileBuffer.toString());
-      extractedText = JSON.stringify(data);
-    } else if (
-      fileType.startsWith('text/') ||
-      document.filename.endsWith('.md') ||
-      document.filename.endsWith('.txt') ||
-      document.filename.endsWith('.csv')
-    ) {
-      // Handle Markdown, Text, and CSV files directly
-      extractedText = fileBuffer.toString('utf8');
-    } else if (fileType.startsWith('image/') || document.filename.endsWith('.png') || document.filename.endsWith('.jpg') || document.filename.endsWith('.jpeg')) {
-      // Perform OCR on images
-      console.log(`[OCR] Extracting text from image: ${document.filename}`);
-      const { data: { text } } = await Tesseract.recognize(fileBuffer, 'eng');
-      extractedText = text;
-      console.log(`[OCR] Successfully extracted ${extractedText.length} characters.`);
-    } else {
-      throw new Error(`Unsupported file type: ${fileType} for file ${document.filename}`);
+    const crawler = new CheerioCrawler({
+      maxRequestsPerCrawl: 50, // Limit deep crawl to 50 pages to prevent infinite loops
+      async requestHandler({ request, $, enqueueLinks }) {
+        console.log(`[Crawler] Processing ${request.url}...`);
+
+        // Extract plain text from HTML, ignoring nav, footer, scripts, styles
+        const html = $.html();
+        const text = convert(html, {
+          selectors: [
+            { selector: 'nav', format: 'skip' },
+            { selector: 'footer', format: 'skip' },
+            { selector: 'script', format: 'skip' },
+            { selector: 'style', format: 'skip' },
+            { selector: 'img', format: 'skip' },
+            { selector: 'a', options: { ignoreHref: true } }
+          ]
+        });
+
+        if (text.trim().length > 0) {
+          extractedText += `\n\n--- Source: ${request.url} ---\n\n${text}`;
+        }
+
+        // Deep crawl: Enqueue links strictly on the same domain
+        await enqueueLinks({
+          strategy: EnqueueStrategy.SameDomain
+        });
+      },
+      failedRequestHandler({ request }) {
+        console.warn(`[Crawler] Failed to scrape ${request.url}`);
+      }
+    });
+
+    console.log(`[Crawler] Starting deep crawl for ${url}`);
+    await crawler.run([url]);
+    console.log(`[Crawler] Finished deep crawl. Extracted ${extractedText.length} characters.`);
+
+    if (extractedText.length === 0) {
+      throw new Error('No readable text found on the provided website.');
     }
 
     const splitter = new RecursiveCharacterTextSplitter({
@@ -70,22 +82,16 @@ export const documentProcessor = async (job: Job) => {
       return Buffer.from(cleanContent, 'utf8').toString('utf8');
     }).filter(c => c.trim().length > 0);
 
-    // Helper to pause execution
     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
     let lastProviderUsed = '';
 
-    // Process in batches of 100 to avoid Gemini 15 RPM free tier rate limits
     for (let i = 0; i < validChunks.length; i += 100) {
-      // Only pause if we previously used a cloud provider that requires rate limiting (Gemini)
       if (i > 0 && lastProviderUsed !== 'ollama') {
         console.log(`Rate limit protection: Pausing for 60 seconds before processing chunk ${i}...`);
         await delay(10000);
       }
 
       const batch = validChunks.slice(i, i + 100);
-      console.log(`Processing batch ${i} to ${i + batch.length} of ${validChunks.length}`);
-
       let embeddings: number[][] = [];
       let success = false;
       let retries = 0;
@@ -98,7 +104,6 @@ export const documentProcessor = async (job: Job) => {
           success = true;
         } catch (err: any) {
           if (err.status === 429 || err.message?.includes('429') || err.message?.includes('Quota')) {
-            console.log(`Global rate limit hit (429)! Pausing for 60s before retrying batch ${i}...`);
             await delay(60000);
             retries++;
           } else {
@@ -108,10 +113,9 @@ export const documentProcessor = async (job: Job) => {
       }
 
       if (!success || !embeddings.length) {
-        throw new Error('Failed to generate embeddings after 3 retries due to Google rate limits.');
+        throw new Error('Failed to generate embeddings after 3 retries.');
       }
 
-      // Execute all inserts concurrently for massive speedup without breaking Prisma's array binding
       await Promise.all(
         batch.map((content, j) => {
           const embedding = embeddings[j];
@@ -128,13 +132,10 @@ export const documentProcessor = async (job: Job) => {
       data: { status: 'COMPLETED' }
     });
 
-    fs.unlinkSync(filePath);
-
   } catch (error: any) {
-    console.error('Document processing failed:', error);
+    console.error('Website crawling failed:', error);
 
-    // Sanitize the error message just in case it contains the broken text that caused the crash
-    const safeErrorMessage = String(error.message || 'Unknown processing error')
+    const safeErrorMessage = String(error.message || 'Unknown crawling error')
       .replace(/[\x00\uD800-\uDFFF]/g, '')
       .substring(0, 500);
 
@@ -148,6 +149,17 @@ export const documentProcessor = async (job: Job) => {
       });
     } catch (fallbackError) {
       console.error('Failed to update document status to FAILED:', fallbackError);
+    }
+  } finally {
+    // Automatically delete the crawlee storage folder to save disk space
+    try {
+      const storagePath = path.join(process.cwd(), 'storage');
+      if (fs.existsSync(storagePath)) {
+        fs.rmSync(storagePath, { recursive: true, force: true });
+        console.log('[Crawler] Purged local storage cache to save space.');
+      }
+    } catch (e) {
+      console.warn('[Crawler] Could not delete storage cache:', e);
     }
   }
 };

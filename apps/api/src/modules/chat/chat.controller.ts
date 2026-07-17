@@ -79,15 +79,42 @@ export const streamChat = async (req: Request, res: Response): Promise<any> => {
       const embeddingResult = await AiFactory.getInstance().executeEmbedding(provider => provider.generateEmbedding(message));
       const embedding = embeddingResult.result;
       chunks = await prisma.$queryRaw`
-        SELECT dc.id, dc.content, 1 - (dc.embedding <=> ${embedding}::vector) as similarity, d.filename as source
+        SELECT 
+          dc.id, 
+          dc.content, 
+          d.filename as source,
+          (1 - (dc.embedding <=> ${embedding}::vector)) as vector_score,
+          ts_rank_cd(to_tsvector('english', dc.content), to_tsquery('english', array_to_string(tsvector_to_array(to_tsvector('english', ${message})), ' | '))) as text_score
         FROM "DocumentChunk" dc
         JOIN "Document" d ON dc."documentId" = d.id
         WHERE dc."tenantId" = ${tenantId}
-        ORDER BY dc.embedding <=> ${embedding}::vector
-        LIMIT 15;
+        ORDER BY ( (1 - (dc.embedding <=> ${embedding}::vector)) * 0.5 + ts_rank_cd(to_tsvector('english', dc.content), to_tsquery('english', array_to_string(tsvector_to_array(to_tsvector('english', ${message})), ' | '))) * 0.5 ) DESC
+        LIMIT 50;
       `;
+
+      // Apply Re-ranking via AiFactory
+      if (chunks.length > 0) {
+        try {
+          console.log(`[Reranker] Sending ${chunks.length} chunks to AiFactory for re-ranking...`);
+
+          const rerankResult = await AiFactory.getInstance().executeRerank(provider => {
+            if (!provider.rerank) throw new Error(`${provider.name} does not support reranking.`);
+            return provider.rerank(message, chunks.map(c => c.content), 15);
+          });
+
+          const rerankedContents = rerankResult.result;
+
+          // Re-map the contents back to the original chunk objects to preserve IDs and sources
+          chunks = rerankedContents.map(content => chunks.find(c => c.content === content)).filter(Boolean);
+
+          console.log(`[Reranker] Successfully narrowed down to top ${chunks.length} chunks using ${rerankResult.providerUsed}.`);
+        } catch (err: any) {
+          console.warn(`[Reranker] Fallback to hybrid scores due to error:`, err.message);
+          chunks = chunks.slice(0, 15);
+        }
+      }
     } catch (e: any) {
-      console.warn("[Embeddings] Failed to fetch embeddings from Ollama, proceeding in Local Mode without RAG context...", e.message);
+      console.warn("[Embeddings] Failed to fetch embeddings, proceeding in Local Mode without RAG context...", e.message);
     }
 
     // let cleanTopic = 'Result';
@@ -112,7 +139,22 @@ export const streamChat = async (req: Request, res: Response): Promise<any> => {
       parts: [{ text: msg.content }]
     }));
 
-    const prompt = `---CONTEXT---\n${contextText}\n\n---USER INPUT---\n${message}`;
+    const prompt = `---SYSTEM INSTRUCTIONS---
+You are a highly intelligent, authoritative expert on the topics provided in the context. Your goal is to provide comprehensive, detailed, and highly accurate answers as a true subject matter expert.
+
+CRITICAL RULES:
+1. NEVER use boilerplate filler phrases like "Based on the provided context..." or "According to the documents...". Just answer directly.
+2. Provide detailed, well-structured, and comprehensive answers. Use Markdown formatting (bullet points, bold text, headers, code blocks) to make the information easy to read and digest. Do NOT give extremely brief answers.
+3. If the context contains detailed lists, steps, technical documentation, or edge cases, include that richness in your answer. Do not skip important details from the documentation.
+4. If the user says something purely conversational (e.g., "hello", "ok", "thanks"), respond naturally and conversationally without referencing the context.
+5. If the answer is not contained in the context, clearly state that you don't have enough information, rather than hallucinating.
+6. MULTILINGUAL SUPPORT: You MUST strictly answer in the exact same language that the user used to ask their question. If the user asks in Spanish, reply in Spanish. If they ask in Gujarati, reply in Gujarati. If the user uses a transliterated language (e.g., Gujarati written in English letters like "su che"), you MUST reply in the native script of that language (e.g., Gujarati script).
+
+---CONTEXT---
+${contextText}
+
+---USER INPUT---
+${message}`;
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { uploadDocuments, getDocuments, retryDocument, deleteDocument } from './document.controller';
+import { uploadDocuments, getDocuments, retryDocument, deleteDocument, crawlWebsite } from './document.controller';
 import fs from 'fs';
 
 const router: Router = Router();
@@ -13,6 +13,7 @@ if (!fs.existsSync(uploadDir)) {
 const upload = multer({ dest: uploadDir });
 
 router.post('/upload', upload.array('files'), uploadDocuments);
+router.post('/crawl', crawlWebsite);
 router.get('/', getDocuments);
 router.post('/:id/retry', retryDocument);
 router.delete('/:id', deleteDocument);

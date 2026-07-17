@@ -3,13 +3,13 @@ import { KeyRotator } from '../utils/key-rotator.util';
 
 export class GroqProvider implements AiProvider {
   name = 'groq';
-  private rotator = new KeyRotator('GROQ_API_KEY', 'Groq');
+  private rotator = new KeyRotator('Groq');
   private baseUrl = 'https://api.groq.com/openai/v1';
-  private model = 'llama3-70b-8192';
+  private model = 'llama-3.3-70b-versatile';
 
   async generateTopic(message: string): Promise<string> {
     try {
-      return await this.rotator.executeWithRotation(async (key) => {
+      return await this.rotator.executeWithRotation(50, async (key) => {
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -23,7 +23,10 @@ export class GroqProvider implements AiProvider {
           })
         });
 
-        if (!response.ok) throw new Error(`Groq API Error: ${response.status}`);
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Groq API Error: ${response.status} - ${errText}`);
+        }
         const data = await response.json();
         return data.choices[0].message.content.trim();
       });
@@ -33,9 +36,9 @@ export class GroqProvider implements AiProvider {
     }
   }
 
-  async classifyIntent(query: string): Promise<'simple' | 'complex'> {
+  async classifyIntent(message: string): Promise<'simple' | 'complex'> {
     try {
-      return await this.rotator.executeWithRotation(async (key) => {
+      return await this.rotator.executeWithRotation(50, async (key) => {
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -44,12 +47,15 @@ export class GroqProvider implements AiProvider {
           },
           body: JSON.stringify({
             model: this.model,
-            messages: [{ role: 'user', content: `Classify the following user query as "simple" (requires factual lookup from documents) or "complex" (requires deep reasoning, summarization, or synthesis). Only output "simple" or "complex".\n\nQuery: ${query}` }],
+            messages: [{ role: 'user', content: `Classify the following user query as "simple" (requires factual lookup from documents) or "complex" (requires deep reasoning, summarization, or synthesis). Only output "simple" or "complex".\n\nQuery: ${message}` }],
             temperature: 0.1
           })
         });
 
-        if (!response.ok) throw new Error(`Groq API Error: ${response.status}`);
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Groq API Error: ${response.status} - ${errText}`);
+        }
         const data = await response.json();
         const text = data.choices[0].message.content.trim().toLowerCase();
         return text.includes('complex') ? 'complex' : 'simple';
@@ -68,6 +74,7 @@ CRITICAL INSTRUCTIONS:
 - Maintain a helpful, highly professional tone.
 - FORMATTING: Always format your answers beautifully using Markdown. Use tables when comparing data, use bullet points for lists, and use **bold text** to highlight key terms.
 - CONCISENESS & TONE: Be extremely clean and direct. NEVER use generic, robotic introductory phrases like "Based on the provided documents". Speak confidently and naturally.
+- NEVER introduce yourself as an AI or language model. Do not say "As an AI language model..." or "I don't have personal opinions...". Just answer the question.
 `;
 
     const messages = [
@@ -79,7 +86,7 @@ CRITICAL INSTRUCTIONS:
       { role: 'user', content: prompt }
     ];
 
-    return await this.rotator.executeWithRotation(async (key) => {
+    return await this.rotator.executeWithRotation(1000, async (key) => {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -93,7 +100,10 @@ CRITICAL INSTRUCTIONS:
         })
       });
 
-      if (!response.ok) throw new Error(`Groq API Error: ${response.status}`);
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Groq API Error: ${response.status} - ${errText}`);
+      }
       if (!response.body) throw new Error('No response body from Groq');
 
       const reader = response.body.getReader();
@@ -132,5 +142,9 @@ CRITICAL INSTRUCTIONS:
 
   async generateEmbeddingsBatch(texts: string[]): Promise<number[][]> {
     throw new Error('Groq does not currently support embeddings. Use Gemini, HuggingFace, or Ollama.');
+  }
+
+  async getQuotaStatuses() {
+    return await this.rotator.getQuotaStatuses();
   }
 }

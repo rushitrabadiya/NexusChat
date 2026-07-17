@@ -1,0 +1,9 @@
+{
+  "execMap": {
+    "ts": "tsx"
+  },
+  "ext": "ts,json",
+  "ignore": [
+    "storage/*"
+  ]
+}

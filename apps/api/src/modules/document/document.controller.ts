@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { documentQueue } from '../../core/queue/bullmq';
+import { documentQueue, crawlQueue } from '../../core/queue/bullmq';
 import { prisma } from '../../core/db/prisma';
 
 export const uploadDocuments = async (req: Request, res: Response): Promise<any> => {
@@ -48,6 +48,45 @@ export const uploadDocuments = async (req: Request, res: Response): Promise<any>
   }
 };
 
+export const crawlWebsite = async (req: Request, res: Response): Promise<any> => {
+  const tenantId = req.headers['x-tenant-id'] as string;
+  const { url } = req.body;
+
+  if (!tenantId) {
+    return res.status(400).json({ error: 'Tenant ID is required' });
+  }
+
+  if (!url || !url.startsWith('http')) {
+    return res.status(400).json({ error: 'A valid URL is required (must start with http/https)' });
+  }
+
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    const document = await prisma.document.create({
+      data: {
+        tenantId,
+        filename: url,
+        fileType: 'url',
+        url: url,
+        status: 'PENDING',
+      }
+    });
+
+    await crawlQueue.add('crawlWebsite', {
+      documentId: document.id,
+      url,
+      tenantId
+    });
+
+    return res.status(202).json({ message: 'URL queued for deep crawling', document });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: 'Crawling failed to queue' });
+  }
+};
+
 export const getDocuments = async (req: Request, res: Response): Promise<any> => {
   const tenantId = req.headers['x-tenant-id'] as string;
   if (!tenantId) return res.status(400).json({ error: 'Tenant ID is required' });
@@ -76,7 +115,7 @@ export const retryDocument = async (req: Request, res: Response): Promise<any> =
     });
 
     if (!document) return res.status(404).json({ error: 'Document not found' });
-    
+
     // Strict validation: Only allow retry on FAILED
     if (document.status !== 'FAILED') {
       return res.status(400).json({ error: 'Only failed documents can be retried' });

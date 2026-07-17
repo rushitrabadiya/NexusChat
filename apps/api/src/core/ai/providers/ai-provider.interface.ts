@@ -34,4 +34,14 @@ export interface AiProvider {
    * Generates a batch of vector embeddings for document chunks
    */
   generateEmbeddingsBatch(texts: string[]): Promise<number[][]>;
+
+  /**
+   * (Optional) Re-ranks a list of documents based on relevance to a query
+   */
+  rerank?(query: string, documents: string[], topN: number): Promise<string[]>;
+
+  /**
+   * (Optional) Returns the quota statuses for the provider's API keys
+   */
+  getQuotaStatuses?(): Promise<import('../utils/quota-tracker.util').QuotaStatus[]>;
 }

@@ -1,47 +1,100 @@
+import { QuotaTracker, QuotaStatus, KeyLimits } from './quota-tracker.util';
+import { redis } from '../../cache/redis.service';
+import { CryptoUtil } from '../../security/crypto.util';
+
 export class KeyRotator {
-  private keys: string[];
   private currentIndex: number = 0;
   private providerName: string;
 
-  constructor(envPrefix: string, providerName: string) {
-    this.providerName = providerName;
-    this.keys = Object.keys(process.env)
-      .filter(k => k.startsWith(envPrefix) && process.env[k])
-      .map(k => process.env[k] as string);
+  constructor(providerName: string) {
+    this.providerName = providerName.toLowerCase();
+  }
 
-    if (this.keys.length === 0) {
-      console.warn(`[KeyRotator] No API keys found for ${providerName} (Prefix: ${envPrefix}). API calls will fail unless the provider is local.`);
-      this.keys = ['']; // Fallback empty key to prevent immediate crashing if unused
+  /**
+   * Fetches the dynamic configuration for this provider from Redis (which is synced from DB)
+   */
+  private async getConfigs(): Promise<KeyLimits[]> {
+    const raw = await redis.get(`system:apikeys:${this.providerName}`);
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw) as KeyLimits[];
+    } catch (e) {
+      console.error(`[KeyRotator] Failed to parse configs for ${this.providerName}`);
+      return [];
     }
   }
 
   /**
-   * Executes an API call, automatically rotating through all available keys if a 429 Rate Limit occurs.
-   * Throws an error if all keys are exhausted or if a non-429 error occurs.
+   * Gets the quota status for all keys configured in this rotator
    */
-  async executeWithRotation<T>(operation: (key: string) => Promise<T>): Promise<T> {
-    let attempts = 0;
-    let lastError: any;
+  async getQuotaStatuses(): Promise<QuotaStatus[]> {
+    const configs = await this.getConfigs();
+    if (configs.length === 0) return [];
+    return await QuotaTracker.getStatus(this.providerName, configs);
+  }
 
-    while (attempts < this.keys.length) {
-      try {
-        const currentKey = this.keys[this.currentIndex];
-        return await operation(currentKey);
-      } catch (error: any) {
-        lastError = error;
-        const isRateLimit = error.status === 429 || error.message?.includes('429');
+  /**
+   * Executes an API call, preemptively checking Redis quotas and automatically rotating 
+   * through all available keys if a local quota is exhausted or if a 429 Rate Limit occurs.
+   * estimatedTokens can be passed to check and deduct against token-based rate limits.
+   */
+  async executeWithRotation<T>(estimatedTokens: number = 0, operation: (key: string) => Promise<T>): Promise<T> {
+    try {
+      const configs = await this.getConfigs();
 
-        if (isRateLimit) {
-          console.warn(`[${this.providerName}] Rate limit hit on key index ${this.currentIndex}. Rotating...`);
-          this.currentIndex = (this.currentIndex + 1) % this.keys.length;
+      if (configs.length === 0) {
+        throw new Error(`[${this.providerName}] No API keys found in Database. Please configure them in the Admin Dashboard.`);
+      }
+
+      let attempts = 0;
+      let lastError: any;
+
+      while (attempts < configs.length) {
+        // Ensure current index is in bounds (in case keys were deleted)
+        this.currentIndex = this.currentIndex % configs.length;
+        const currentConfig = configs[this.currentIndex];
+
+        // PREEMPTIVE CHECK: Do we have enough quota in Redis across all intervals?
+        const isAvailable = await QuotaTracker.checkRemaining(this.providerName, currentConfig);
+
+        if (!isAvailable) {
+          console.log(`[${this.providerName}] Local quota preemptively exhausted for key ${currentConfig.key.substring(0, 5)}***. Rotating...`);
+          this.currentIndex = (this.currentIndex + 1) % configs.length;
           attempts++;
-        } else {
-          // If it's not a rate limit error, fail immediately (e.g., Auth error, Bad Request)
-          throw error;
+          continue; // Skip the API call entirely and try the next key
+        }
+
+        try {
+          // Record the usage BEFORE making the call (optimistic tracking)
+          await QuotaTracker.recordUsage(this.providerName, currentConfig, estimatedTokens);
+
+          // Decrypt the key right before handing it to the AI model
+          const plainTextKey = CryptoUtil.decrypt(currentConfig.key);
+
+          return await operation(plainTextKey);
+        } catch (error: any) {
+          lastError = error;
+          const isRateLimit = error.status === 429 || error.message?.includes('429');
+
+          if (isRateLimit) {
+            console.warn(`[${this.providerName}] ACTUAL API Rate limit hit on key ${currentConfig.key.substring(0, 5)}***. Forcing local quota sync to 0...`);
+
+            // As requested by the user: if the API hits us with a 429, we force our local Redis tracker to 0
+            await QuotaTracker.forceExhaust(this.providerName, currentConfig);
+
+            this.currentIndex = (this.currentIndex + 1) % configs.length;
+            attempts++;
+          } else {
+            // If it's not a rate limit error, fail immediately (e.g., Auth error, Bad Request)
+            throw error;
+          }
         }
       }
-    }
 
-    throw new Error(`[${this.providerName}] All API keys exhausted due to rate limits. Last Error: ${lastError?.message}`);
+      throw new Error(`[${this.providerName}] All API keys exhausted due to rate limits. Last Error: ${lastError?.message}`);
+    } catch (globalError) {
+      console.error(`[KeyRotator] Fatal error in executeWithRotation for ${this.providerName}:`, globalError);
+      throw globalError;
+    }
   }
 }

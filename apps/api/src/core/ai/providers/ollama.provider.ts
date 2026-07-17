@@ -5,8 +5,8 @@ export class OllamaProvider implements AiProvider {
   private baseUrl = 'http://localhost:11434/api';
   // Model Configuration Options
   // private model = 'qwen2:0.5b'; // Extremely fast, lightweight model (0.5B) - Best for speed
-  // private model = 'llama3.2:1b'; // Fast, lightweight LLaMA model (1B) - Good balance
-  private model = 'llama3.2'; // Highly capable 3B/8B model for better reasoning - Slower on local hardware
+  private model = 'llama3.2:1b'; // Fast, lightweight LLaMA model (1B) - Good balance
+  // private model = 'llama3.2'; // Highly capable 3B/8B model for better reasoning - Slower on local hardware
 
   async generateTopic(message: string): Promise<string> {
     try {

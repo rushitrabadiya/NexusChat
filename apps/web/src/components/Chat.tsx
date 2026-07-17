@@ -36,15 +36,20 @@ export function Chat() {
 
   useEffect(() => {
     if (!chatSessionId || !currentTenant) {
-      setMessages([]);
+      if (!isStreaming) setMessages([]);
       return;
     }
+
+    // Prevent race conditions where the backend assigns a sessionId mid-stream
+    // and this useEffect fires, wiping out the actively streaming AI message!
+    if (isStreaming) return;
 
     const fetchMessages = async () => {
       try {
         const res = await api.get(`/chat/${chatSessionId}/messages`, {
           headers: { 'x-tenant-id': currentTenant.id }
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setMessages(data.map((msg: any) => ({
           id: msg.id,
@@ -59,7 +64,7 @@ export function Chat() {
     };
 
     fetchMessages();
-  }, [chatSessionId, currentTenant]);
+  }, [chatSessionId, currentTenant, isStreaming]);
 
   const submitMessage = async (text: string) => {
     setIsStreaming(true);

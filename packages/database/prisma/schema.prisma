@@ -26,6 +26,7 @@ model Document {
   filename  String
   fileType  String
   filePath  String?
+  url       String?
   error     String?
   status    DocumentStatus   @default(PENDING)
   chunks    DocumentChunk[]
@@ -75,4 +76,28 @@ enum Role {
   USER
   AI
   SYSTEM
+}
+
+model ApiKey {
+  id                 String   @id @default(uuid())
+  provider           String   // e.g. Gemini, Groq, OpenRouter, Cohere, Jina, HuggingFace
+  name               String   // e.g. GEMINI_API_KEY_1
+  key                String   @unique // Encrypted string
+  isActive           Boolean  @default(true)
+  
+  // Rate Limits (Nullable, if null = unlimited)
+  limitRequestsMin   Int?
+  limitRequestsHour  Int?
+  limitRequestsDay   Int?
+  limitRequestsMonth Int?
+  limitTokensMin     Int?
+  limitTokensDay     Int?
+
+  // Persistent Metrics
+  usageRequests      Int      @default(0)
+  usageTokens        Int      @default(0)
+  usageCost          Float    @default(0) // If we want to track $ cost in the future
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
